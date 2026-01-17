@@ -1,13 +1,56 @@
-from dotenv import load_dotenv
-import os
+from pydantic import BaseModel, Field, computed_field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-load_dotenv()
+class DatabaseConfig(BaseModel):
+    """Настройки PostgreSQL"""
 
-bot_token = os.getenv("BOT_TOKEN")
+    user: str = Field(..., description="PostgreSQL username")
+    password: str = Field(..., description="PostgreSQL password")
+    host: str = Field(default="localhost", description="PostgreSQL host")
+    port: int = Field(default=5432, description="PostgreSQL port")
+    db: str = Field(..., description="PostgreSQL database name")
 
-postrges_user = 'postgres'
-postrges_password = os.getenv('POSTGRES_PASSWORD')
-postrges_host = 'postgres-db'
-postrges_port = 5432
-postrges_db = ''
+    @computed_field
+    @property
+    def url(self) -> str:
+        """Генерирует database URL для SQLAlchemy"""
+        return (
+            f"postgresql+asyncpg://{self.user}:{self.password}@"
+            f"{self.host}:{self.port}/{self.db}?async_fallback=True"
+        )
+
+
+class TelegramBotConfig(BaseModel):
+    """Настройки Telegram бота"""
+
+    token: str = Field(..., description="Telegram bot token")
+
+
+class Config(BaseSettings):
+    """Главная конфигурация приложения с автоматической загрузкой из .env"""
+
+    model_config = SettingsConfigDict(
+        env_file='.env',
+        env_file_encoding='utf-8',
+        case_sensitive=False,
+        extra='ignore',
+        env_nested_delimiter='__'
+    )
+
+    # Группы настроек
+    postgres: DatabaseConfig = Field(default_factory=lambda: DatabaseConfig(
+        user="",
+        password="",
+        db=""
+    ))
+    bot: TelegramBotConfig = Field(default_factory=lambda: TelegramBotConfig(token=""))
+
+    @property
+    def database_url(self) -> str:
+        """Алиас для обратной совместимости"""
+        return self.postgres.url
+
+
+# Создаём синглтон конфига
+config = Config()

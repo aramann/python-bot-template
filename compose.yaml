@@ -1,24 +1,25 @@
-services:
-  bot:
+x-common-service: &common-service
     build:
       context: .
+    image: bot_name:latest
     restart: unless-stopped
+    extra_hosts:
+        - "host.docker.internal:host-gateway"
+    networks:
+        - tg_api
+        - proxy-net
+        - default
     volumes:
-      - bot-data:/app/data
-    depends_on:
-      - postgres-db
+        - ./data:/app/data
+    env_file:
+        - .env
 
-  postgres-db:
-    image: postgres:16
-    restart: unless-stopped
-    shm_size: 128mb
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: lshui
-    volumes:
-      - postgres-db-data:/var/lib/postgresql/data
-
-volumes:
-  bot-data:
-  postgres-db-data:
+services:
+  bot:
+    <<: *common-service
+#    labels:
+#      - "traefik.enable=true"
+#      - "traefik.http.routers.bot.rule=Host(`bot.example.com`)"
+#      - "traefik.http.routers.bot.entrypoints=https"
+#      - "traefik.http.services.bot.loadbalancer.server.port=8080"
+#      - "traefik.http.routers.bot.tls=true"

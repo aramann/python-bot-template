@@ -1,25 +1,22 @@
-ARG PYTHON_VERSION=3.12.7
-FROM python:${PYTHON_VERSION}-slim as base
+FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim AS base
 
-# Prevents Python from writing pyc files.
-ENV PYTHONDONTWRITEBYTECODE=1
-
-# Keeps Python from buffering stdout and stderr to avoid situations where
-# the application crashes without emitting any logs due to buffering.
-ENV PYTHONUNBUFFERED=1
+# UV envs
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_DEV=1 UV_TOOL_BIN_DIR=/usr/local/bin
 
 WORKDIR /app
 
-# Download dependencies as a separate step to take advantage of Docker's caching.
-# Leverage a cache mount to /root/.cache/pip to speed up subsequent builds.
-# Leverage a bind mount to requirements.txt to avoid having to copy them into
-# into this layer.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    --mount=type=bind,source=requirements.txt,target=requirements.txt \
-    python -m pip install -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project
 
-# Copy the source code into the container.
-COPY . .
+COPY . /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+ENV PYTHONUNBUFFERED=1
 
 # Run the application.
-CMD python3 bot.py
+CMD ["uv", "run", "-m", "bot.main"]
