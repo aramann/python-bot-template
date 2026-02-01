@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import users
+from common.redis import redis_client
 from config import config
 
 
@@ -20,21 +21,18 @@ async def lifespan(app: FastAPI):
     """
     Управление жизненным циклом приложения.
 
-    Startup: инициализация ресурсов (клиенты, подключения)
+    Startup: инициализация ресурсов
     Shutdown: корректное закрытие ресурсов
     """
     # Startup
     print("API starting...")
-    # Здесь можно инициализировать:
-    # - Redis клиент
-    # - Внешние API клиенты
-    # - Background tasks
+    await redis_client.connect()
 
     yield
 
     # Shutdown
     print("API shutting down...")
-    # Здесь закрываем ресурсы
+    await redis_client.disconnect()
 
 
 # Настройка путей к документации

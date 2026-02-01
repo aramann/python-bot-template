@@ -31,22 +31,180 @@ project/
 │   ├── main.py             # Точка входа бота
 │   └── handlers/           # Обработчики команд
 ├── api/                    # FastAPI для Mini App
-│   ├── dependencies.py     # Аутентификация
+│   ├── dependencies.py     # DI: сессия, UoW, аутентификация
 │   └── routes/             # Эндпоинты
 ├── common/
 │   ├── auth/               # Telegram WebApp валидация
+│   ├── cache.py            # Декоратор @cached для Redis
+│   ├── redis.py            # Redis клиент
 │   └── db/postgres/
-│       ├── base.py         # BaseInteractor + Base
+│       ├── base.py         # get_session() + Base
+│       ├── uow.py          # Unit of Work
 │       ├── models/         # SQLAlchemy модели
-│       └── interactors/    # Работа с БД
+│       └── interactors/    # Репозитории
 ├── alembic/                # Миграции
-├── main.py                 # Точка входа API
 ├── config.py               # Конфиг (pydantic-settings)
 ├── Dockerfile
 └── compose.yaml
 ```
 
-## Как добавить хэндлер
+## Архитектура: Unit of Work + Dependency Injection
+
+### Зачем это нужно?
+
+- **Одна транзакция** на весь запрос (несколько операций — один commit)
+- **Легко тестировать** (можно мокать сессию)
+- **Меньше соединений** к БД
+
+### Как это работает
+
+```
+HTTP Request
+     ↓
+get_db_session()     → AsyncSession (одна на запрос)
+     ↓
+get_uow()            → UnitOfWork(session)
+     ↓                   ├── users: UserRepository
+Эндпоинт                 ├── orders: OrderRepository
+     ↓                   └── ... (все репозитории)
+     ↓
+Автоматический commit/rollback
+```
+
+### Unit of Work
+
+`common/db/postgres/uow.py` — контейнер для всех репозиториев:
+
+```python
+class UnitOfWork:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.users = UserRepository(session)
+        self.orders = OrderRepository(session)
+        # Все репозитории используют одну сессию
+```
+
+### Использование в FastAPI
+
+```python
+from api.dependencies import get_uow
+from common.db.postgres.uow import UnitOfWork
+
+@router.post("/order")
+async def create_order(uow: UnitOfWork = Depends(get_uow)):
+    user = await uow.users.get_by_id(1)
+    order = await uow.orders.create(user_id=user.id, total=100)
+    await uow.logs.create(action="order_created")
+    # Один commit в конце — все операции атомарны
+```
+
+### Использование в боте
+
+```python
+from common.db.postgres.base import get_session
+from common.db.postgres.uow import UnitOfWork
+
+async def handle(self, message: Message):
+    async with get_session() as session:
+        uow = UnitOfWork(session)
+        user, created = await uow.users.get_or_create(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+        )
+```
+
+## Как добавить новый репозиторий
+
+### 1. Создай модель
+
+`common/db/postgres/models/order.py`:
+
+```python
+from sqlalchemy import BigInteger, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column
+
+from common.db.postgres.base import Base
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    total: Mapped[int]
+```
+
+### 2. Импортируй в `models/__init__.py`
+
+```python
+from common.db.postgres.models.user import User
+from common.db.postgres.models.order import Order  # ← добавь
+
+__all__ = ["User", "Order"]
+```
+
+**КРИТИЧНО:** Без этого Alembic не увидит модель!
+
+### 3. Создай репозиторий
+
+`common/db/postgres/interactors/order.py`:
+
+```python
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from common.db.postgres.models.order import Order
+
+class OrderRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_id(self, order_id: int) -> Order | None:
+        result = await self.session.execute(
+            select(Order).where(Order.id == order_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def create(self, user_id: int, total: int) -> Order:
+        order = Order(user_id=user_id, total=total)
+        self.session.add(order)
+        await self.session.flush()
+        await self.session.refresh(order)
+        return order
+```
+
+### 4. Добавь в Unit of Work
+
+`common/db/postgres/uow.py`:
+
+```python
+from common.db.postgres.interactors.order import OrderRepository
+
+class UnitOfWork:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.users = UserRepository(session)
+        self.orders = OrderRepository(session)  # ← добавь
+```
+
+### 5. Создай миграцию
+
+```bash
+uv run alembic revision --autogenerate -m "Add orders"
+uv run alembic upgrade head
+```
+
+### 6. Используй
+
+```python
+@router.get("/orders/{order_id}")
+async def get_order(order_id: int, uow: UnitOfWork = Depends(get_uow)):
+    order = await uow.orders.get_by_id(order_id)
+    if not order:
+        raise HTTPException(status_code=404)
+    return order
+```
+
+## Как добавить хэндлер бота
 
 ### Структура хэндлеров
 
@@ -54,7 +212,7 @@ project/
 bot/
 ├── main.py                 # Точка входа + регистрация обработчиков
 └── handlers/
-    ├── __init__.py         # Экспорты
+    ├── __init__.py
     ├── base.py             # Базовый класс BaseHandler
     └── start.py            # Пример: обработчик /start
 ```
@@ -68,6 +226,8 @@ from telebot.types import Message, CallbackQuery
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.handlers.base import BaseHandler
+from common.db.postgres.base import get_session
+from common.db.postgres.uow import UnitOfWork
 
 
 class MenuHandler(BaseHandler):
@@ -89,8 +249,15 @@ class MenuHandler(BaseHandler):
 
     async def on_profile_callback(self, call: CallbackQuery):
         """Callback: нажатие на кнопку Профиль"""
+        async with get_session() as session:
+            uow = UnitOfWork(session)
+            user = await uow.users.get_by_telegram_id(call.from_user.id)
+
         await self.bot.answer_callback_query(call.id)
-        await self.bot.send_message(call.message.chat.id, "Ваш профиль")
+        await self.bot.send_message(
+            call.message.chat.id,
+            f"Ваш профиль: {user.first_name}",
+        )
 ```
 
 2. Добавь экспорт в `bot/handlers/__init__.py`:
@@ -106,7 +273,6 @@ __all__ = ["BaseHandler", "StartHandler", "MenuHandler"]
 ```python
 from bot.handlers import StartHandler, MenuHandler
 
-# Создаём инстансы обработчиков
 start_handler = StartHandler(bot)
 menu_handler = MenuHandler(bot)
 
@@ -121,220 +287,141 @@ async def callback_profile(call: CallbackQuery):
     await menu_handler.on_profile_callback(call)
 ```
 
-### FSM (Finite State Machine)
-
-Для многошаговых сценариев используй состояния:
-
-1. Создай `bot/states.py`:
-
-```python
-from telebot.asyncio_handler_backends import State, StatesGroup
-
-
-class FormStates(StatesGroup):
-    """Состояния для формы"""
-    name_input = State()
-    email_input = State()
-```
-
-2. Добавь storage в `bot/main.py`:
-
-```python
-from telebot.asyncio_storage import StateMemoryStorage
-
-storage = StateMemoryStorage()
-bot = AsyncTeleBot(config.bot.token, state_storage=storage)
-```
-
-3. Используй в хэндлере:
-
-```python
-from bot.states import FormStates
-
-
-class FormHandler(BaseHandler):
-
-    async def start_form(self, message: Message):
-        """Начать заполнение формы"""
-        await self.bot.set_state(
-            message.from_user.id,
-            FormStates.name_input,
-            message.chat.id,
-        )
-        await self.bot.send_message(message.chat.id, "Введите имя:")
-
-    async def on_name_input(self, message: Message):
-        """Обработка ввода имени"""
-        async with self.bot.retrieve_data(message.from_user.id, message.chat.id) as data:
-            data["name"] = message.text
-
-        await self.bot.set_state(
-            message.from_user.id,
-            FormStates.email_input,
-            message.chat.id,
-        )
-        await self.bot.send_message(message.chat.id, "Теперь введите email:")
-
-    async def on_email_input(self, message: Message):
-        """Обработка ввода email"""
-        async with self.bot.retrieve_data(message.from_user.id, message.chat.id) as data:
-            name = data["name"]
-            email = message.text
-
-        await self.bot.delete_state(message.from_user.id, message.chat.id)
-        await self.bot.send_message(
-            message.chat.id,
-            f"Готово! Имя: {name}, Email: {email}",
-        )
-```
-
-4. Зарегистрируй FSM-обработчики:
-
-```python
-@bot.message_handler(state=FormStates.name_input)
-async def handle_name_input(message: Message):
-    await form_handler.on_name_input(message)
-
-
-@bot.message_handler(state=FormStates.email_input)
-async def handle_email_input(message: Message):
-    await form_handler.on_email_input(message)
-```
-
 ## API (FastAPI)
-
-Для Mini App или внешних интеграций есть FastAPI.
 
 ### Структура
 
 ```
 api/
-├── __init__.py
-├── dependencies.py      # Аутентификация (validate Telegram init_data)
+├── dependencies.py      # get_db_session, get_uow, get_current_user
 └── routes/
-    ├── __init__.py
     └── users.py         # Пример роутера
-common/auth/
-├── __init__.py
-└── telegram.py          # Валидация Telegram WebApp
-main.py                  # Точка входа FastAPI
 ```
 
 ### Запуск
 
 ```bash
-# API
-uv run uvicorn api.main:app --reload
-
-# Бот (отдельный процесс)
-uv run -m bot.main
+uv run uvicorn api.main:app --reload   # API
+uv run -m bot.main                      # Бот (отдельно)
 ```
 
 ### Добавление роутера
 
-1. Создай `api/routes/items.py`:
+1. Создай `api/routes/orders.py`:
 
 ```python
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from api.dependencies import get_current_user
+from api.dependencies import get_current_user, get_uow
+from common.db.postgres.uow import UnitOfWork
 
-router = APIRouter(prefix="/items", tags=["Items"])
+router = APIRouter(prefix="/orders", tags=["Orders"])
 
 
-class ItemResponse(BaseModel):
+class OrderResponse(BaseModel):
     id: int
-    name: str
+    total: int
+
+    model_config = {"from_attributes": True}
 
 
-@router.get("/", response_model=list[ItemResponse])
-async def list_items(user_id: int = Depends(get_current_user)):
-    """Список items текущего пользователя."""
-    # Используй интерактор для работы с БД
-    return []
-
-
-@router.post("/", response_model=ItemResponse)
-async def create_item(
-    name: str,
+@router.get("/", response_model=list[OrderResponse])
+async def list_orders(
     user_id: int = Depends(get_current_user),
+    uow: UnitOfWork = Depends(get_uow),
 ):
-    """Создать item."""
-    return ItemResponse(id=1, name=name)
+    """Список заказов текущего пользователя."""
+    orders = await uow.orders.get_by_user_id(user_id)
+    return orders
+
+
+@router.post("/", response_model=OrderResponse)
+async def create_order(
+    total: int,
+    user_id: int = Depends(get_current_user),
+    uow: UnitOfWork = Depends(get_uow),
+):
+    """Создать заказ."""
+    order = await uow.orders.create(user_id=user_id, total=total)
+    return order
 ```
 
-2. Добавь в `api/routes/__init__.py`:
+2. Подключи в `api/main.py`:
 
 ```python
-from api.routes import users, items
+from api.routes import users, orders
 
-__all__ = ["users", "items"]
-```
-
-3. Подключи в `main.py`:
-
-```python
-from api.routes import users, items
-
-app.include_router(users.router, prefix="/api")
-app.include_router(items.router, prefix="/api")
+app.include_router(users.router)
+app.include_router(orders.router)
 ```
 
 ### Аутентификация
 
-API использует Telegram WebApp init_data для аутентификации:
+API использует Telegram WebApp init_data:
 
 ```python
 from api.dependencies import get_current_user
 
 @router.get("/protected")
 async def protected_endpoint(user_id: int = Depends(get_current_user)):
-    # user_id - это ID пользователя в БД (не telegram_id!)
+    # user_id — ID в БД (не telegram_id!)
     return {"user_id": user_id}
 ```
 
-**Debug режим:** В `.env` установи `API__DEBUG_TOKEN=secret123`, затем в запросах используй Bearer токен `secret123;1` где `1` - user_id.
+**Debug режим:** `API__DEBUG_TOKEN=secret123` → Bearer токен `secret123;1` где `1` — user_id.
 
-### Скрытая документация
+## Redis и кэширование
 
-Для продакшена скрой документацию:
+### Подключение
 
-```bash
-# .env
-API__DOCS_SECRET=MySecretPath123
-```
-
-Документация будет доступна по `/MySecretPath123/docs` вместо `/docs`.
-
-### Lifespan (инициализация ресурсов)
-
-В `main.py` есть lifespan для инициализации/закрытия ресурсов:
+Redis подключается в `api/main.py` через lifespan:
 
 ```python
+from common.redis import redis_client
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    redis = await aioredis.from_url("redis://localhost")
-    app.state.redis = redis
-
+    await redis_client.connect()
     yield
-
-    # Shutdown
-    await redis.close()
+    await redis_client.disconnect()
 ```
 
-## Как добавить новую модель
+### Использование
 
-1. Создай модель `common/db/postgres/models/account.py`
-2. **Импортируй в `models/__init__.py`** (иначе Alembic не увидит!)
-3. Создай интерактор `common/db/postgres/interactors/account.py`
-4. Импортируй в `interactors/__init__.py`
-5. Миграции:
-```bash
-alembic revision --autogenerate -m "Add accounts"
-alembic upgrade head
+```python
+from common.redis import redis_client
+
+await redis_client.set("key", "value", ex=3600)
+value = await redis_client.get("key")
+
+await redis_client.set_json("user:123", {"name": "John"}, ex=300)
+data = await redis_client.get_json("user:123")
 ```
+
+### Кэширование через декоратор
+
+```python
+from common.cache import cached, invalidate
+
+class UserRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @cached(ttl=300, key="user:{user_id}", model=User)
+    async def get_by_id(self, user_id: int) -> User | None:
+        result = await self.session.execute(...)
+        return result.scalar_one_or_none()
+
+    async def update(self, user_id: int, **kwargs) -> User:
+        ...
+        await invalidate(f"user:{user_id}")
+```
+
+- `ttl` — время жизни в секундах
+- `key` — шаблон ключа (подставляются аргументы)
+- `model` — ORM модель для десериализации
+- Graceful fallback: если Redis недоступен — работает напрямую с БД
 
 ## Конфигурация
 
@@ -343,46 +430,22 @@ alembic upgrade head
 ```bash
 POSTGRES__USER=user
 POSTGRES__PASSWORD=pass
-POSTGRES__HOST=localhost     # для локального запуска
-POSTGRES__HOST=postgres      # для Docker с PostgreSQL
+POSTGRES__HOST=localhost     # локально
+POSTGRES__HOST=postgres      # Docker
 BOT__TOKEN=123:ABC...
+API__DEBUG_TOKEN=secret123   # для тестов
+REDIS__HOST=localhost
 ```
 
 Доступ в коде:
+
 ```python
 from config import config
 
 config.postgres.url
 config.bot.token
+config.api.debug_token
 ```
-
-## Важные моменты
-
-### Интеракторы - stateless
-
-Используем `@classmethod` т.к. интеракторы не хранят состояние:
-```python
-class UserInteractor(BaseInteractor):
-    @classmethod
-    async def get_by_id(cls, user_id: int):
-        async with cls.get_session() as session:
-            ...
-
-# Вызов без создания объекта
-user = await UserInteractor.get_by_id(123)
-```
-
-### Импорты моделей для Alembic
-
-**КРИТИЧНО:** Все модели должны быть в `models/__init__.py`:
-```python
-from common.db.postgres.models.user import User
-from common.db.postgres.models.account import Account
-
-__all__ = ["User", "Account"]
-```
-
-Иначе Alembic не увидит модели при генерации миграций.
 
 ## Docker команды
 
@@ -395,14 +458,12 @@ docker compose logs -f bot
 # Миграции
 docker compose run --rm bot alembic upgrade head
 docker compose run --rm bot alembic revision --autogenerate -m "msg"
-
-# Выполнить команду
-docker compose exec bot <command>
 ```
 
 ### PostgreSQL в Docker
 
 Добавь в `compose.yaml`:
+
 ```yaml
 services:
   postgres:
@@ -413,7 +474,6 @@ services:
       POSTGRES_DB: ${POSTGRES__DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
 
   bot:
     depends_on:
@@ -423,24 +483,6 @@ volumes:
   postgres_data:
 ```
 
-И в `.env`: `POSTGRES__HOST=postgres`
-
-## Основные команды
-
-```bash
-# Зависимости
-uv add <package>
-uv sync
-
-# Миграции
-alembic revision --autogenerate -m "description"
-alembic upgrade head
-alembic downgrade -1
-
-# Запуск
-uv run -m bot.main
-```
-
 ## Стек
 
-Python 3.14 • FastAPI • PostgreSQL • SQLAlchemy 2.0 • Alembic • Pydantic Settings • pyTelegramBotAPI • Docker • UV
+Python 3.14 • FastAPI • PostgreSQL • Redis • SQLAlchemy 2.0 • Alembic • Pydantic Settings • pyTelegramBotAPI • Docker • UV

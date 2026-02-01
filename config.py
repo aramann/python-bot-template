@@ -35,6 +35,20 @@ class ApiConfig(BaseModel):
     docs_secret: str | None = Field(default=None, description="Secret path for API docs (None = public)")
 
 
+class RedisConfig(BaseModel):
+    """Настройки Redis"""
+
+    host: str = Field(default="localhost", description="Redis host")
+    port: int = Field(default=6379, description="Redis port")
+    db: int = Field(default=0, description="Redis database number")
+
+    @computed_field
+    @property
+    def url(self) -> str:
+        """Redis URL для подключения"""
+        return f"redis://{self.host}:{self.port}/{self.db}"
+
+
 class Config(BaseSettings):
     """Главная конфигурация приложения с автоматической загрузкой из .env"""
 
@@ -54,6 +68,7 @@ class Config(BaseSettings):
     ))
     bot: TelegramBotConfig = Field(default_factory=lambda: TelegramBotConfig(token=""))
     api: ApiConfig = Field(default_factory=ApiConfig)
+    redis: RedisConfig = Field(default_factory=RedisConfig)
 
     @property
     def database_url(self) -> str:

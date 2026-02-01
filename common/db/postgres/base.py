@@ -1,49 +1,77 @@
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+"""
+База для работы с PostgreSQL.
 
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession, AsyncEngine
+Предоставляет:
+- Base для ORM моделей
+- get_session() context manager для работы с сессией
+"""
+
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import declarative_base
 
 from config import config
 
 Base = declarative_base()
 
+_engine: AsyncEngine | None = None
+_session_maker: async_sessionmaker[AsyncSession] | None = None
 
-class BaseInteractor:
-    _engine: Optional[AsyncEngine] = None
-    _session_maker: Optional[async_sessionmaker] = None
 
-    @classmethod
-    def _initialize_engine(cls) -> None:
-        if cls._engine is None:
-            cls._engine = create_async_engine(
-                config.database_url,
-                echo=False,
-                pool_size=10,
-                max_overflow=20,
-                pool_pre_ping=True,
-            )
-            cls._session_maker = async_sessionmaker(
-                cls._engine,
-                class_=AsyncSession,
-                expire_on_commit=False,
-            )
+def _init_db() -> None:
+    """Инициализация engine и session_maker."""
+    global _engine, _session_maker
 
-    @classmethod
-    @asynccontextmanager
-    async def get_session(cls) -> AsyncGenerator[AsyncSession, None]:
-        cls._initialize_engine()
-        async with cls._session_maker() as session:
-            try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
+    if _engine is None:
+        _engine = create_async_engine(
+            config.database_url,
+            echo=False,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+        )
+        _session_maker = async_sessionmaker(
+            _engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
 
-    @classmethod
-    async def close_engine(cls) -> None:
-        if cls._engine is not None:
-            await cls._engine.dispose()
-            cls._engine = None
-            cls._session_maker = None
+
+@asynccontextmanager
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Context manager для работы с сессией.
+
+    Использование:
+        async with get_session() as session:
+            repo = UserRepository(session)
+            user = await repo.get_by_id(1)
+
+    Автоматически коммитит при успехе, откатывает при ошибке.
+    """
+    _init_db()
+
+    async with _session_maker() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def close_db() -> None:
+    """Закрыть соединения с БД."""
+    global _engine, _session_maker
+
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
+        _session_maker = None

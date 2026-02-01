@@ -1,32 +1,41 @@
 """
-API Dependencies - аутентификация и общие зависимости.
+API Dependencies — аутентификация и общие зависимости.
 """
 
 import json
 import logging
+from typing import AsyncGenerator
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.auth.telegram import TelegramAuth
-from common.db.postgres.interactors.user import UserInteractor
+from common.db.postgres.base import get_session
+from common.db.postgres.uow import UnitOfWork
 from config import config
 
 logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer()
 
 
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Dependency для получения сессии БД."""
+    async with get_session() as session:
+        yield session
+
+
+async def get_uow(session: AsyncSession = Depends(get_db_session)) -> UnitOfWork:
+    """Dependency для получения Unit of Work."""
+    return UnitOfWork(session)
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    uow: UnitOfWork = Depends(get_uow),
 ) -> int:
     """
     Валидация Telegram WebApp init_data из Bearer токена.
-
-    Шаги:
-    1. Извлекает init_data из Bearer токена
-    2. Валидирует HMAC-SHA256 подпись
-    3. Проверяет срок действия (24 часа)
-    4. Создаёт/обновляет пользователя в БД
 
     Returns:
         user_id: ID пользователя в БД
@@ -106,7 +115,7 @@ async def get_current_user(
 
     # Создаём/получаем пользователя в БД
     try:
-        user, _ = await UserInteractor.get_or_create(
+        user, _ = await uow.users.get_or_create(
             telegram_id=telegram_id,
             username=user_data.get("username"),
             first_name=user_data.get("first_name"),

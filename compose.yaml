@@ -17,12 +17,29 @@ x-common-service: &common-service
 services:
   bot:
     <<: *common-service
+    depends_on:
+      - redis
+
   api:
     <<: *common-service
     command: uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - redis
 #    labels:
 #      - "traefik.enable=true"
 #      - "traefik.http.routers.my-app-api.rule=Host(`my-app-api.example.com`)"
 #      - "traefik.http.routers.my-app-api.entrypoints=https"
 #      - "traefik.http.services.my-app-api.loadbalancer.server.port=8080"
 #      - "traefik.http.routers.my-app-api.tls=true"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - default
+
+volumes:
+  redis_data:

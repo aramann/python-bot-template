@@ -3,7 +3,8 @@
 from telebot.types import Message
 
 from bot.handlers.base import BaseHandler
-from common.db.postgres.interactors.user import UserInteractor
+from common.db.postgres.base import get_session
+from common.db.postgres.uow import UnitOfWork
 
 
 class StartHandler(BaseHandler):
@@ -20,12 +21,14 @@ class StartHandler(BaseHandler):
         first_name = message.from_user.first_name
         last_name = message.from_user.last_name
 
-        user, created = await UserInteractor.get_or_create(
-            telegram_id=telegram_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name,
-        )
+        async with get_session() as session:
+            uow = UnitOfWork(session)
+            user, created = await uow.users.get_or_create(
+                telegram_id=telegram_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
 
         if created:
             text = f"Привет, {first_name or 'друг'}! Добро пожаловать!"

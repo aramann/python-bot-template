@@ -1,11 +1,11 @@
 """
-Интеракторы для работы с базой данных.
+Репозитории для работы с базой данных.
 
-Каждый интерактор отвечает за работу с определённой моделью.
+Каждый репозиторий отвечает за работу с определённой моделью.
 """
 
-from common.db.postgres.interactors.user import UserInteractor
+from common.db.postgres.interactors.user import UserRepository
 
 __all__ = [
-    "UserInteractor",
+    "UserRepository",
 ]

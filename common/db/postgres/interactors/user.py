@@ -1,174 +1,133 @@
 """
-Пример интерактора для работы с пользователями.
-
-Создавай интеракторы по аналогии с этим.
+Репозиторий для работы с пользователями.
 """
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.db.postgres.base import BaseInteractor
+from common.cache import cached, invalidate
 from common.db.postgres.models.user import User
 
 
-class UserInteractor(BaseInteractor):
-    """Интерактор для работы с пользователями"""
+class UserRepository:
+    """
+    Репозиторий для работы с пользователями.
 
-    @classmethod
-    async def get_by_telegram_id(cls, telegram_id: int) -> Optional[User]:
-        """
-        Получить пользователя по telegram_id
+    Использование:
+        async with get_session() as session:
+            repo = UserRepository(session)
+            user = await repo.get_by_id(1)
+    """
 
-        Args:
-            telegram_id: ID пользователя в Telegram
+    def __init__(self, session: AsyncSession):
+        self.session = session
 
-        Returns:
-            User или None если не найден
-        """
-        async with cls.get_session() as session:
-            result = await session.execute(
-                select(User).where(User.telegram_id == telegram_id)
-            )
-            return result.scalar_one_or_none()
+    @cached(ttl=300, key="user:{user_id}", model=User)
+    async def get_by_id(self, user_id: int) -> User | None:
+        """Получить пользователя по ID."""
+        result = await self.session.execute(select(User).where(User.id == user_id))
+        return result.scalar_one_or_none()
 
-    @classmethod
+    @cached(ttl=300, key="user:tg:{telegram_id}", model=User)
+    async def get_by_telegram_id(self, telegram_id: int) -> User | None:
+        """Получить пользователя по telegram_id."""
+        result = await self.session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def _invalidate_user(self, user: User) -> None:
+        """Инвалидировать все кэши пользователя."""
+        await invalidate(f"user:{user.id}")
+        await invalidate(f"user:tg:{user.telegram_id}")
+
     async def create(
-        cls,
+        self,
         telegram_id: int,
-        username: Optional[str] = None,
-        first_name: Optional[str] = None,
-        last_name: Optional[str] = None,
+        username: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
     ) -> User:
-        """
-        Создать нового пользователя
+        """Создать нового пользователя."""
+        user = User(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        self.session.add(user)
+        await self.session.flush()
+        await self.session.refresh(user)
+        return user
 
-        Args:
-            telegram_id: ID пользователя в Telegram
-            username: Username пользователя
-            first_name: Имя
-            last_name: Фамилия
-
-        Returns:
-            Созданный пользователь
-        """
-        async with cls.get_session() as session:
-            user = User(
-                telegram_id=telegram_id,
-                username=username,
-                first_name=first_name,
-                last_name=last_name,
-            )
-            session.add(user)
-            await session.flush()
-            await session.refresh(user)
-            return user
-
-    @classmethod
     async def get_or_create(
-        cls,
+        self,
         telegram_id: int,
-        username: Optional[str] = None,
-        first_name: Optional[str] = None,
-        last_name: Optional[str] = None,
+        username: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
     ) -> tuple[User, bool]:
         """
-        Получить существующего пользователя или создать нового.
+        Получить или создать пользователя.
 
-        Если пользователь существует - обновляет его данные (username, first_name, last_name).
-
-        Args:
-            telegram_id: ID пользователя в Telegram
-            username: Username пользователя
-            first_name: Имя
-            last_name: Фамилия
+        Обновляет данные если они изменились.
 
         Returns:
-            Кортеж (пользователь, был_создан)
+            tuple[User, bool]: (пользователь, создан ли новый)
         """
-        async with cls.get_session() as session:
-            result = await session.execute(
-                select(User).where(User.telegram_id == telegram_id)
-            )
-            user = result.scalar_one_or_none()
+        user = await self.get_by_telegram_id(telegram_id)
 
-            if user:
-                # Обновляем данные если изменились
-                needs_update = False
+        if user:
+            needs_update = False
 
-                if username is not None and user.username != username:
-                    user.username = username
-                    needs_update = True
+            if username is not None and user.username != username:
+                needs_update = True
+            if first_name is not None and user.first_name != first_name:
+                needs_update = True
+            if last_name is not None and user.last_name != last_name:
+                needs_update = True
 
-                if first_name is not None and user.first_name != first_name:
-                    user.first_name = first_name
-                    needs_update = True
+            if needs_update:
+                # Получаем свежий объект из БД для обновления
+                result = await self.session.execute(
+                    select(User).where(User.id == user.id)
+                )
+                db_user = result.scalar_one()
+                db_user.username = username
+                db_user.first_name = first_name
+                db_user.last_name = last_name
+                await self.session.flush()
+                await self.session.refresh(db_user)
+                await self._invalidate_user(db_user)
+                return db_user, False
 
-                if last_name is not None and user.last_name != last_name:
-                    user.last_name = last_name
-                    needs_update = True
+            return user, False
 
-                if needs_update:
-                    session.add(user)
-                    await session.flush()
-                    await session.refresh(user)
+        # Создаём нового
+        user = User(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        self.session.add(user)
+        await self.session.flush()
+        await self.session.refresh(user)
+        return user, True
 
-                return user, False
+    async def update(self, user_id: int, **kwargs) -> User | None:
+        """Обновить данные пользователя."""
+        result = await self.session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
 
-            # Создаём нового пользователя
-            user = User(
-                telegram_id=telegram_id,
-                username=username,
-                first_name=first_name,
-                last_name=last_name,
-            )
-            session.add(user)
-            await session.flush()
-            await session.refresh(user)
-            return user, True
+        if not user:
+            return None
 
-    @classmethod
-    async def get_by_id(cls, user_id: int) -> Optional[User]:
-        """
-        Получить пользователя по ID в БД
+        for key, value in kwargs.items():
+            if hasattr(user, key):
+                setattr(user, key, value)
 
-        Args:
-            user_id: ID пользователя в БД
-
-        Returns:
-            User или None если не найден
-        """
-        async with cls.get_session() as session:
-            result = await session.execute(
-                select(User).where(User.id == user_id)
-            )
-            return result.scalar_one_or_none()
-
-    @classmethod
-    async def update(cls, user_id: int, **kwargs) -> Optional[User]:
-        """
-        Обновить данные пользователя
-
-        Args:
-            user_id: ID пользователя в БД
-            **kwargs: Поля для обновления
-
-        Returns:
-            Обновлённый пользователь или None
-        """
-        async with cls.get_session() as session:
-            result = await session.execute(
-                select(User).where(User.id == user_id)
-            )
-            user = result.scalar_one_or_none()
-
-            if not user:
-                return None
-
-            for key, value in kwargs.items():
-                if hasattr(user, key):
-                    setattr(user, key, value)
-
-            await session.flush()
-            await session.refresh(user)
-            return user
+        await self.session.flush()
+        await self.session.refresh(user)
+        await self._invalidate_user(user)
+        return user
