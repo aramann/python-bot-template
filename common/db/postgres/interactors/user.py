@@ -73,7 +73,9 @@ class UserInteractor(BaseInteractor):
         last_name: Optional[str] = None,
     ) -> tuple[User, bool]:
         """
-        Получить существующего пользователя или создать нового
+        Получить существующего пользователя или создать нового.
+
+        Если пользователь существует - обновляет его данные (username, first_name, last_name).
 
         Args:
             telegram_id: ID пользователя в Telegram
@@ -84,17 +86,63 @@ class UserInteractor(BaseInteractor):
         Returns:
             Кортеж (пользователь, был_создан)
         """
-        user = await cls.get_by_telegram_id(telegram_id)
-        if user:
-            return user, False
+        async with cls.get_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalar_one_or_none()
 
-        user = await cls.create(
-            telegram_id=telegram_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name,
-        )
-        return user, True
+            if user:
+                # Обновляем данные если изменились
+                needs_update = False
+
+                if username is not None and user.username != username:
+                    user.username = username
+                    needs_update = True
+
+                if first_name is not None and user.first_name != first_name:
+                    user.first_name = first_name
+                    needs_update = True
+
+                if last_name is not None and user.last_name != last_name:
+                    user.last_name = last_name
+                    needs_update = True
+
+                if needs_update:
+                    session.add(user)
+                    await session.flush()
+                    await session.refresh(user)
+
+                return user, False
+
+            # Создаём нового пользователя
+            user = User(
+                telegram_id=telegram_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            session.add(user)
+            await session.flush()
+            await session.refresh(user)
+            return user, True
+
+    @classmethod
+    async def get_by_id(cls, user_id: int) -> Optional[User]:
+        """
+        Получить пользователя по ID в БД
+
+        Args:
+            user_id: ID пользователя в БД
+
+        Returns:
+            User или None если не найден
+        """
+        async with cls.get_session() as session:
+            result = await session.execute(
+                select(User).where(User.id == user_id)
+            )
+            return result.scalar_one_or_none()
 
     @classmethod
     async def update(cls, user_id: int, **kwargs) -> Optional[User]:

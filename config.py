@@ -27,6 +27,14 @@ class TelegramBotConfig(BaseModel):
     token: str = Field(..., description="Telegram bot token")
 
 
+class ApiConfig(BaseModel):
+    """Настройки API"""
+
+    debug: bool = Field(default=False, description="Debug mode")
+    debug_token: str | None = Field(default=None, description="Debug token for development")
+    docs_secret: str | None = Field(default=None, description="Secret path for API docs (None = public)")
+
+
 class Config(BaseSettings):
     """Главная конфигурация приложения с автоматической загрузкой из .env"""
 
@@ -45,6 +53,7 @@ class Config(BaseSettings):
         db=""
     ))
     bot: TelegramBotConfig = Field(default_factory=lambda: TelegramBotConfig(token=""))
+    api: ApiConfig = Field(default_factory=ApiConfig)
 
     @property
     def database_url(self) -> str:

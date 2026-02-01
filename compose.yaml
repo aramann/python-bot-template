@@ -1,25 +1,28 @@
 x-common-service: &common-service
-    build:
-      context: .
-    image: bot_name:latest
-    restart: unless-stopped
-    extra_hosts:
-        - "host.docker.internal:host-gateway"
-    networks:
-        - tg_api
-        - proxy-net
-        - default
-    volumes:
-        - ./data:/app/data
-    env_file:
-        - .env
+  build:
+    context: .
+  image: bot_name:latest
+  restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  networks:
+    - tg_api
+    - proxy-net
+    - default
+  volumes:
+    - ./data:/app/data
+  env_file:
+    - .env
 
 services:
   bot:
     <<: *common-service
+  api:
+    <<: *common-service
+    command: uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
 #    labels:
 #      - "traefik.enable=true"
-#      - "traefik.http.routers.bot.rule=Host(`bot.example.com`)"
-#      - "traefik.http.routers.bot.entrypoints=https"
-#      - "traefik.http.services.bot.loadbalancer.server.port=8080"
-#      - "traefik.http.routers.bot.tls=true"
+#      - "traefik.http.routers.my-app-api.rule=Host(`my-app-api.example.com`)"
+#      - "traefik.http.routers.my-app-api.entrypoints=https"
+#      - "traefik.http.services.my-app-api.loadbalancer.server.port=8080"
+#      - "traefik.http.routers.my-app-api.tls=true"
