@@ -2,6 +2,35 @@
 
 Шаблон для Telegram ботов с PostgreSQL, SQLAlchemy, Alembic и Docker.
 
+## Создание проекта из шаблона
+
+```bash
+# Установи copier
+pipx install copier
+# или
+uv tool install copier
+
+# Создай проект из шаблона
+copier copy gh:aramann/python-bot-template ./my-bot
+
+# Или из локальной папки
+copier copy /path/to/python-bot-template ./my-bot
+```
+
+Copier спросит:
+
+- **Название проекта** — человекочитаемое имя (например, `My Awesome Bot`)
+- **Slug** — для Docker и пакетов (авто: `my-awesome-bot`)
+- **Версия Python** — 3.14, 3.13 или 3.12
+
+После создания:
+
+```bash
+cd my-bot
+cp .env.example .env  # заполни переменные
+uv sync
+```
+
 ## Быстрый старт
 
 ### Docker

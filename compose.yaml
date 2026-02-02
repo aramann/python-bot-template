@@ -1,7 +1,7 @@
 x-common-service: &common-service
   build:
     context: .
-  image: bot_name:latest
+  image: { { project_slug } }:latest
   restart: unless-stopped
   extra_hosts:
     - "host.docker.internal:host-gateway"

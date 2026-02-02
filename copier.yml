@@ -1,0 +1,35 @@
+_min_copier_version: "9.0.0"
+
+_exclude:
+  - .git
+  - .venv
+  - __pycache__
+  - "*.pyc"
+  - .idea
+  - copier.yml
+  - .env
+  - data/
+
+project_name:
+  type: str
+  help: Название проекта
+  placeholder: "My Bot"
+
+project_slug:
+  type: str
+  help: Slug для пакетов и Docker (авто)
+  default: "{{ project_name | lower | replace(' ', '-') | replace('_', '-') }}"
+
+project_slug_underscore:
+  type: str
+  help: Slug с подчёркиваниями для Python
+  default: "{{ project_slug | replace('-', '_') }}"
+
+python_version:
+  type: str
+  help: Версия Python
+  default: "3.14"
+  choices:
+    - "3.14"
+    - "3.13"
+    - "3.12"
