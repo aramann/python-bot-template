@@ -58,7 +58,7 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Настрой под свои нужды
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,8 +70,4 @@ app.include_router(users.router)
 
 @app.get("/health")
 async def health_check():
-    """Health check (без авторизации)."""
-    return {
-        "status": "ok",
-        "timestamp": datetime.now().isoformat(),
-    }
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}

@@ -77,6 +77,16 @@ class RedisClient:
         """Сохранить JSON значение."""
         await self.set(key, json.dumps(value), ex=ex)
 
+    async def ping(self) -> bool:
+        """Проверка подключения к Redis."""
+        try:
+            if self._client:
+                await self._client.ping()
+                return True
+        except Exception:
+            pass
+        return False
+
 
 # Синглтон клиент
 redis_client = RedisClient()

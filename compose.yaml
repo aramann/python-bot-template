@@ -19,12 +19,18 @@ services:
     <<: *common-service
     depends_on:
       - redis
+    networks:
+      - default
+      - tg_api
 
   api:
     <<: *common-service
     command: uv run uvicorn api.main:app --host 0.0.0.0 --port 8000
     depends_on:
       - redis
+    networks:
+      - default
+      - proxy-net
 #    labels:
 #      - "traefik.enable=true"
 #      - "traefik.http.routers.my-app-api.rule=Host(`my-app-api.example.com`)"
@@ -33,7 +39,7 @@ services:
 #      - "traefik.http.routers.my-app-api.tls=true"
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     restart: unless-stopped
     volumes:
       - redis_data:/data

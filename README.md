@@ -4,13 +4,13 @@
 
 ## Быстрый старт
 
-### Docker (рекомендуется)
+### Docker
 
 ```bash
 cp .env.example .env  # заполни переменные
+uv sync
+uv run alembic upgrade head
 docker compose up --build -d
-docker compose run --rm bot alembic upgrade head
-docker compose logs -f bot
 ```
 
 ### Локально
@@ -32,6 +32,7 @@ project/
 │   └── handlers/           # Обработчики команд
 ├── api/                    # FastAPI для Mini App
 │   ├── dependencies.py     # DI: сессия, UoW, аутентификация
+│   ├── schemas/            # Pydantic схемы
 │   └── routes/             # Эндпоинты
 ├── common/
 │   ├── auth/               # Telegram WebApp валидация
@@ -294,8 +295,11 @@ async def callback_profile(call: CallbackQuery):
 ```
 api/
 ├── dependencies.py      # get_db_session, get_uow, get_current_user
+├── schemas/             # Pydantic схемы
+│   ├── __init__.py
+│   └── user.py
 └── routes/
-    └── users.py         # Пример роутера
+    └── users.py
 ```
 
 ### Запуск
@@ -307,23 +311,34 @@ uv run -m bot.main                      # Бот (отдельно)
 
 ### Добавление роутера
 
-1. Создай `api/routes/orders.py`:
+1. Создай схему `api/schemas/order.py`:
 
 ```python
-from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-
-from api.dependencies import get_current_user, get_uow
-from common.db.postgres.uow import UnitOfWork
-
-router = APIRouter(prefix="/orders", tags=["Orders"])
-
 
 class OrderResponse(BaseModel):
     id: int
     total: int
 
     model_config = {"from_attributes": True}
+```
+
+2. Добавь экспорт в `api/schemas/__init__.py`:
+
+```python
+from api.schemas.order import OrderResponse
+```
+
+3. Создай `api/routes/orders.py`:
+
+```python
+from fastapi import APIRouter, Depends, HTTPException
+
+from api.dependencies import get_current_user, get_uow
+from api.schemas import OrderResponse
+from common.db.postgres.uow import UnitOfWork
+
+router = APIRouter(prefix="/orders", tags=["Orders"])
 
 
 @router.get("/", response_model=list[OrderResponse])
@@ -331,9 +346,7 @@ async def list_orders(
     user_id: int = Depends(get_current_user),
     uow: UnitOfWork = Depends(get_uow),
 ):
-    """Список заказов текущего пользователя."""
-    orders = await uow.orders.get_by_user_id(user_id)
-    return orders
+    return await uow.orders.get_by_user_id(user_id)
 
 
 @router.post("/", response_model=OrderResponse)
@@ -342,12 +355,10 @@ async def create_order(
     user_id: int = Depends(get_current_user),
     uow: UnitOfWork = Depends(get_uow),
 ):
-    """Создать заказ."""
-    order = await uow.orders.create(user_id=user_id, total=total)
-    return order
+    return await uow.orders.create(user_id=user_id, total=total)
 ```
 
-2. Подключи в `api/main.py`:
+4. Подключи в `api/main.py`:
 
 ```python
 from api.routes import users, orders
@@ -456,8 +467,8 @@ docker compose down
 docker compose logs -f bot
 
 # Миграции
-docker compose run --rm bot alembic upgrade head
-docker compose run --rm bot alembic revision --autogenerate -m "msg"
+uv run alembic upgrade head
+uv run alembic revision --autogenerate -m "msg"
 ```
 
 ### PostgreSQL в Docker
@@ -467,7 +478,7 @@ docker compose run --rm bot alembic revision --autogenerate -m "msg"
 ```yaml
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: ${POSTGRES__USER}
       POSTGRES_PASSWORD: ${POSTGRES__PASSWORD}
