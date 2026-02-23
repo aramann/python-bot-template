@@ -1,5 +1,7 @@
 _min_copier_version: "9.0.0"
 
+_templates_suffix: ""
+
 _exclude:
   - .git
   - .venv

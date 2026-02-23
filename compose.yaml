@@ -49,3 +49,9 @@ services:
 
 volumes:
   redis_data:
+
+networks:
+  tg_api:
+    external: true
+  proxy-net:
+    external: true
