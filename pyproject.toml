@@ -1,8 +1,8 @@
 [project]
-name = "{{ project_slug }}"
+name = "{{ project_slug }}" # {{ project_slug }}
 version = "0.1.0"
 description = "{{ project_name }}"
-requires-python = ">={{ python_version }}"
+requires-python = ">={{ python_version }}" # {{ python_version }}
 dependencies = [
     "aiohttp>=3.13.3",
     "asyncpg>=0.31.0",

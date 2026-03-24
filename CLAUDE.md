@@ -28,10 +28,10 @@ config.py               # Pydantic Settings конфигурация
 
 - Python 3.12+, uv (package manager)
 - FastAPI + Uvicorn
-- PyTelegramBotAPI (async)
+- PyTelegramBotAPI (async) + StateRedisStorage
 - SQLAlchemy 2.0+ (async) + asyncpg
 - Alembic (миграции)
-- Redis (кэширование)
+- Redis (кэширование + стейты бота)
 - Docker Compose
 
 ## Архитектура
@@ -157,6 +157,63 @@ class MyHandler(BaseHandler):
 ```
 
 Зарегистрировать в `bot/main.py`.
+
+## Стейты бота (FSM)
+
+Используются **встроенные стейты pyTelegramBotAPI** с `StateRedisStorage`. НЕ изобретать свои dict/class-variable
+костыли.
+
+### Инициализация (bot/main.py)
+
+```python
+from telebot.asyncio_filters import StateFilter
+from telebot.asyncio_storage import StateRedisStorage
+
+state_storage = StateRedisStorage(
+    host=config.redis.host, port=config.redis.port, db=config.redis.db
+)
+bot = AsyncTeleBot(token, state_storage=state_storage)
+bot.add_custom_filter(StateFilter(bot))  # ОБЯЗАТЕЛЬНО, без этого state= в хэндлерах не работает
+```
+
+### Определение стейтов (bot/states.py)
+
+```python
+from telebot.states import State, StatesGroup
+
+class MyStates(StatesGroup):
+    waiting_input = State()
+```
+
+### Установка стейта
+
+```python
+await self.bot.set_state(user_id, MyStates.waiting_input, chat_id)
+```
+
+### Обработка по стейту (в main.py, ПЕРЕД общим text handler)
+
+```python
+@bot.message_handler(state=MyStates.waiting_input, content_types=["text"])
+async def handle_input(message: Message):
+    ...
+```
+
+### Сброс стейта
+
+```python
+await bot.delete_state(user_id, chat_id)
+```
+
+### Передача данных через стейт
+
+```python
+await bot.add_data(user_id, chat_id, key="value")
+data = await bot.retrieve_data(user_id, chat_id)  # {"key": "value"}
+```
+
+**Важно:** state handler ДОЛЖЕН быть зарегистрирован РАНЬШЕ общего text handler. Сбрасывать стейт при навигации (main
+menu, назад).
 
 ## Кэширование
 
